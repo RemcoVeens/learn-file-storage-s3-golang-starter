@@ -1,13 +1,28 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
+	"log"
 	"net/http"
+	"os"
+	"os/exec"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
 	"github.com/google/uuid"
 )
+
+type FFProbeOutput struct {
+	Streams []Stream `json:"streams"`
+}
+
+type Stream struct {
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
 
 func (cfg *apiConfig) handlerVideoMetaCreate(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
@@ -117,4 +132,40 @@ func (cfg *apiConfig) handlerVideosRetrieve(w http.ResponseWriter, r *http.Reque
 	}
 
 	respondWithJSON(w, http.StatusOK, videos)
+}
+func getVideoAspectRatio(filePath string) (string, error) {
+	cmd := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+	var out bytes.Buffer
+	buff := io.MultiWriter(os.Stdout, &out)
+	cmd.Stdout = buff
+	err := cmd.Run()
+	if err != nil {
+		log.Panic(err)
+		return "", err
+	}
+	var probeOutput FFProbeOutput
+	if err := json.Unmarshal(out.Bytes(), &probeOutput); err != nil {
+		return "", fmt.Errorf("failed to unmarshal ffprobe output: %w", err)
+	}
+	if len(probeOutput.Streams) == 0 {
+		return "", fmt.Errorf("no streams found in ffprobe output for file: %s", filePath)
+	}
+	var width, height int
+	for _, stream := range probeOutput.Streams {
+		if stream.Width > 0 && stream.Height > 0 {
+			width = stream.Width
+			height = stream.Height
+			break
+		}
+	}
+	if width == 0 || height == 0 {
+		return "", fmt.Errorf("could not find valid width and height in streams for file: %s", filePath)
+	}
+	if width*9 == height*16 {
+		return "16:9", nil
+	}
+	if width*16 == height*9 {
+		return "9:16", nil
+	}
+	return "other", nil
 }
