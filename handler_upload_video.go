@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
 	"mime"
 	"net/http"
 	"os"
+	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -73,10 +76,9 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	filePath := File.Name()
-	log.Println(filePath)
 	asp, err := getVideoAspectRatio(filePath)
 	if err != nil {
-		log.Panic(err)
+		log.Print(err)
 		respondWithError(w, http.StatusInternalServerError, "Couldn't get video aspect ratio", err)
 		return
 	}
@@ -89,22 +91,56 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	default:
 		orientation = "portrait"
 	}
+	filePath, err = processVideoForFastStart(filePath)
+	if err != nil {
+		log.Print(err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't faststart video", err)
+		return
+	}
+	fileFF, err := os.Open(filePath)
+	if err != nil {
+		log.Print(err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't open video file", err)
+		return
+	}
 	randomFileName := orientation + "/" + uuid.New().String() + ".mp4"
 	_, err = cfg.s3Client.PutObject(r.Context(), &s3.PutObjectInput{
 		Bucket:      &cfg.s3Bucket,
 		Key:         &randomFileName,
-		Body:        File,
+		Body:        fileFF,
 		ContentType: &mediatype,
 	})
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't upload video", err)
 		return
 	}
-	vurl := fmt.Sprintf("https://%v.s3.%v.amazonaws.com/%v", cfg.s3Bucket, cfg.s3Region, randomFileName)
+	vurl := fmt.Sprintf("%v,%v", cfg.s3Bucket, randomFileName)
 	Video.VideoURL = &vurl
+	Video, err = cfg.dbVideoToSignedVideo(Video)
+	if err != nil {
+		log.Print(err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't sign video", err)
+		return
+	}
 	err = cfg.db.UpdateVideo(Video)
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Couldn't update video", err)
 		return
 	}
+}
+
+func generatePresignedURL(s3Client *s3.Client, bucket, key string, expireTime time.Duration) (string, error) {
+	PSClient := s3.NewPresignClient(s3Client)
+	PSOBJ, err := PSClient.PresignGetObject(
+		context.Background(),
+		&s3.GetObjectInput{
+			Bucket: aws.String(bucket),
+			Key:    aws.String(key),
+		},
+		s3.WithPresignExpires(expireTime),
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate presigned URL: %w", err)
+	}
+	return PSOBJ.URL, nil
 }

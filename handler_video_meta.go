@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
-	"os"
 	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
@@ -133,14 +133,37 @@ func (cfg *apiConfig) handlerVideosRetrieve(w http.ResponseWriter, r *http.Reque
 
 	respondWithJSON(w, http.StatusOK, videos)
 }
+func (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video, error) {
+	fmt.Println("video = " + *video.VideoURL)
+	if *video.VideoURL == "" {
+		return video, fmt.Errorf("there is no video URL")
+	}
+	parts := strings.Split(*video.VideoURL, ",")
+	if len(parts) != 2 {
+		return video, fmt.Errorf("invalid video URL format")
+	}
+	bucket := strings.TrimSpace(parts[0])
+	key := strings.TrimSpace(parts[1])
+
+	presignedURL, err := generatePresignedURL(cfg.s3Client, bucket, key, time.Hour*24)
+	if err != nil {
+		// Return the underlying error from the presigning service
+		return database.Video{}, err
+	}
+	video.VideoURL = &presignedURL
+	fmt.Println("signed video = " + *video.VideoURL)
+	return video, nil
+}
 func getVideoAspectRatio(filePath string) (string, error) {
-	cmd := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+	cmd := exec.Command("ffprobe",
+		"-v", "error",
+		"-print_format", "json",
+		"-show_streams", filePath)
 	var out bytes.Buffer
-	buff := io.MultiWriter(os.Stdout, &out)
-	cmd.Stdout = buff
+	cmd.Stdout = &out
 	err := cmd.Run()
 	if err != nil {
-		log.Panic(err)
+		log.Print(err)
 		return "", err
 	}
 	var probeOutput FFProbeOutput
@@ -168,4 +191,21 @@ func getVideoAspectRatio(filePath string) (string, error) {
 		return "9:16", nil
 	}
 	return "other", nil
+}
+func processVideoForFastStart(filePath string) (string, error) {
+	processingPath := filePath + ".processing"
+	cmd := exec.Command("ffmpeg",
+		"-i", filePath,
+		"-c", "copy",
+		"-movflags", "faststart",
+		"-f", "mp4",
+		processingPath)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	err := cmd.Run()
+	if err != nil {
+		log.Print(err)
+		return "", fmt.Errorf("failed to process video for fast start: %w", err)
+	}
+	return processingPath, nil
 }
