@@ -7,8 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
-	"strings"
-	"time"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/database"
@@ -132,27 +130,6 @@ func (cfg *apiConfig) handlerVideosRetrieve(w http.ResponseWriter, r *http.Reque
 	}
 
 	respondWithJSON(w, http.StatusOK, videos)
-}
-func (cfg *apiConfig) dbVideoToSignedVideo(video database.Video) (database.Video, error) {
-	fmt.Println("video = " + *video.VideoURL)
-	if *video.VideoURL == "" {
-		return video, fmt.Errorf("there is no video URL")
-	}
-	parts := strings.Split(*video.VideoURL, ",")
-	if len(parts) != 2 {
-		return video, fmt.Errorf("invalid video URL format")
-	}
-	bucket := strings.TrimSpace(parts[0])
-	key := strings.TrimSpace(parts[1])
-
-	presignedURL, err := generatePresignedURL(cfg.s3Client, bucket, key, time.Hour*24)
-	if err != nil {
-		// Return the underlying error from the presigning service
-		return database.Video{}, err
-	}
-	video.VideoURL = &presignedURL
-	fmt.Println("signed video = " + *video.VideoURL)
-	return video, nil
 }
 func getVideoAspectRatio(filePath string) (string, error) {
 	cmd := exec.Command("ffprobe",
